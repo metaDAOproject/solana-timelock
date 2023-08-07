@@ -73,6 +73,19 @@ pub mod solana_timelock {
         Ok(())
     }
 
+    pub fn dequeue_transaction(ctx: Context<DequeueTransaction>, index: u64) -> Result<()> {
+        let timelock = &mut ctx.accounts.timelock;
+
+        let removed_tx = timelock.transaction_queue.remove(index as usize);
+
+        require!(
+            removed_tx == ctx.accounts.transaction.key(),
+            TimelockError::WrongTransactionAccount
+        );
+
+        Ok(())
+    }
+
     pub fn update_delay_in_slots(
         ctx: Context<RecursiveAuth>,
         new_delay_in_slots: u64,
@@ -110,4 +123,22 @@ pub struct EnqueueTransaction<'info> {
     pub authority: Signer<'info>,
     #[account(zero)]
     pub transaction: Account<'info, Transaction>,
+}
+
+#[derive(Accounts)]
+pub struct DequeueTransaction<'info> {
+    #[account(mut, has_one = authority)]
+    pub timelock: Account<'info, Timelock>,
+    pub authority: Signer<'info>,
+    #[account(mut, close = lamport_receiver)]
+    pub transaction: Account<'info, Transaction>,
+    /// CHECK: https://www.eff.org/cyberspace-independence
+    #[account(mut)]
+    pub lamport_receiver: UncheckedAccount<'info>,
+}
+
+#[error_code]
+pub enum TimelockError {
+    #[msg("Tried to dequeue a transaction from the wrong index / timelock")]
+    WrongTransactionAccount,
 }

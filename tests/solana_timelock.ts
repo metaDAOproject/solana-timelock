@@ -75,5 +75,19 @@ describe("solana_timelock", () => {
       .rpc();
 
     console.log(await program.account.transaction.fetch(transaction.publicKey));
+    console.log(await program.account.timelock.fetch(timelock.publicKey));
+
+    await program.methods
+      .dequeueTransaction(new anchor.BN(0))
+      .accounts({
+        timelock: timelock.publicKey,
+        authority: authority.publicKey,
+        transaction: transaction.publicKey,
+        lamportReceiver: authority.publicKey,
+      })
+      .signers([authority])
+      .rpc();
+
+    console.log(await program.account.timelock.fetch(timelock.publicKey));
   });
 });
