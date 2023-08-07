@@ -37,11 +37,19 @@ pub struct TransactionAccount {
 pub mod solana_timelock {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
+    pub fn init_timelock(ctx: Context<InitializeTimelock>, authority: Pubkey, delay_in_slots: u64) -> Result<()> {
+        let timelock = &mut ctx.accounts.timelock;
+
+        timelock.authority = authority;
+        timelock.delay_in_slots = delay_in_slots;
+
         Ok(())
     }
 }
 
 #[derive(Accounts)]
-pub struct Initialize {}
+pub struct InitializeTimelock<'info> {
+    #[account(zero)]
+    timelock: Account<'info, Timelock>,
+}
 
