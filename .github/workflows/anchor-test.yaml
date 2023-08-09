@@ -1,8 +1,6 @@
 name: anchor-test
 on:
   push:
-    branches:
-      - main
   pull_request:
 
 jobs:
