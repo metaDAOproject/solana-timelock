@@ -3,30 +3,28 @@
 //! and/or security.
 
 use anchor_lang::prelude::*;
+use anchor_lang::solana_program;
+use anchor_lang::solana_program::instruction::Instruction;
+use std::convert::Into;
+use std::ops::Deref;
 
-declare_id!("7wTNNa26MRFt18kKPz6t3oD3RuKcfN3PjUjLG9tHbWH2");
+declare_id!("TiMEYuk7rCBAFYMvhN3hae9PRc1NUYL71Zu3MCaCBVe");
 
 #[account]
 pub struct Timelock {
     pub authority: Pubkey,
-    pub delay_in_slots: u64,
-    /// PDA bump used to derive the signer of the timelock. The timelock itself
-    /// cannot sign because it is not a PDA.
     pub signer_bump: u8,
-    // TODO: use a more optimized structure like a sokoban::Deque
-    pub transaction_queue: Vec<Pubkey>,
+    pub delay_in_slots: u64,
 }
 
 #[account]
 pub struct Transaction {
-    /// Slot that this transaction was enqueued
-    pub enqueued_slot: u64,
-    /// Target program to execute against
+    pub timelock: Pubkey,
     pub program_id: Pubkey,
-    /// Accounts required for the transaction
     pub accounts: Vec<TransactionAccount>,
-    /// Instruction data for the transaction
     pub data: Vec<u8>,
+    pub did_execute: bool,
+    pub enqueued_slot: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -40,75 +38,105 @@ pub struct TransactionAccount {
 pub mod solana_timelock {
     use super::*;
 
-    pub fn init_timelock(
-        ctx: Context<InitializeTimelock>,
+    pub fn create_timelock(
+        ctx: Context<CreateTimelock>,
         authority: Pubkey,
         delay_in_slots: u64,
+        signer_bump: u8,
     ) -> Result<()> {
         let timelock = &mut ctx.accounts.timelock;
 
         timelock.authority = authority;
         timelock.delay_in_slots = delay_in_slots;
+        timelock.signer_bump = signer_bump;
 
         Ok(())
     }
 
     pub fn enqueue_transaction(
         ctx: Context<EnqueueTransaction>,
-        program_id: Pubkey,
-        accounts: Vec<TransactionAccount>,
+        pid: Pubkey,
+        accs: Vec<TransactionAccount>,
         data: Vec<u8>,
     ) -> Result<()> {
-        let timelock = &mut ctx.accounts.timelock;
-        let transaction = &mut ctx.accounts.transaction;
+        let tx = &mut ctx.accounts.transaction;
         let clock = Clock::get()?;
 
-        transaction.enqueued_slot = clock.slot;
-        transaction.program_id = program_id;
-        transaction.accounts = accounts;
-        transaction.data = data;
-
-        timelock.transaction_queue.push(transaction.key());
-
-        Ok(())
-    }
-
-    pub fn dequeue_transaction(ctx: Context<DequeueTransaction>, index: u64) -> Result<()> {
-        let timelock = &mut ctx.accounts.timelock;
-
-        let removed_tx = timelock.transaction_queue.remove(index as usize);
-
-        require!(
-            removed_tx == ctx.accounts.transaction.key(),
-            TimelockError::WrongTransactionAccount
-        );
+        tx.enqueued_slot = clock.slot;
+        tx.program_id = pid;
+        tx.accounts = accs;
+        tx.data = data;
+        tx.timelock = ctx.accounts.timelock.key();
+        tx.did_execute = false;
 
         Ok(())
     }
 
-    pub fn update_delay_in_slots(
-        ctx: Context<RecursiveAuth>,
-        new_delay_in_slots: u64,
-    ) -> Result<()> {
+    pub fn set_delay_in_slots(ctx: Context<Auth>, delay_in_slots: u64) -> Result<()> {
         let timelock = &mut ctx.accounts.timelock;
 
-        timelock.delay_in_slots = new_delay_in_slots;
+        timelock.delay_in_slots = delay_in_slots;
+
+        Ok(())
+    }
+
+    pub fn set_authority(ctx: Context<Auth>, authority: Pubkey) -> Result<()> {
+        let timelock = &mut ctx.accounts.timelock;
+
+        timelock.authority = authority;
+
+        Ok(())
+    }
+
+    pub fn execute_transaction(ctx: Context<ExecuteTransaction>) -> Result<()> {
+        if ctx.accounts.transaction.did_execute {
+            return Err(TimelockError::AlreadyExecuted.into());
+        }
+
+        let clock = Clock::get()?;
+        let enqueued_slot = ctx.accounts.transaction.enqueued_slot;
+        let required_delay = ctx.accounts.timelock.delay_in_slots;
+        if clock.slot - enqueued_slot < required_delay {
+            return Err(TimelockError::NotReady.into());
+        }
+
+        let mut ix: Instruction = (*ctx.accounts.transaction).deref().into();
+        for acc in ix.accounts.iter_mut() {
+            if &acc.pubkey == ctx.accounts.timelock_signer.key {
+                acc.is_signer = true;
+            }
+        }
+        let timelock_key = ctx.accounts.timelock.key();
+        let seeds = &[timelock_key.as_ref(), &[ctx.accounts.timelock.signer_bump]];
+        let signer = &[&seeds[..]];
+        let accounts = ctx.remaining_accounts;
+        solana_program::program::invoke_signed(&ix, accounts, signer)?;
+
+        ctx.accounts.transaction.did_execute = true;
 
         Ok(())
     }
 }
 
 #[derive(Accounts)]
-pub struct InitializeTimelock<'info> {
-    #[account(zero)]
-    timelock: Account<'info, Timelock>,
+pub struct CreateTimelock<'info> {
+    #[account(zero, signer)]
+    timelock: Box<Account<'info, Timelock>>,
 }
 
-/// Instructions with this context need to be executed by the timelock
 #[derive(Accounts)]
-pub struct RecursiveAuth<'info> {
+pub struct EnqueueTransaction<'info> {
+    #[account(has_one = authority)]
+    timelock: Box<Account<'info, Timelock>>,
+    #[account(zero, signer)]
+    transaction: Box<Account<'info, Transaction>>,
+    authority: Signer<'info>,
+}
+
+#[derive(Accounts)]
+pub struct Auth<'info> {
     #[account(mut)]
-    timelock: Account<'info, Timelock>,
+    timelock: Box<Account<'info, Timelock>>,
     #[account(
         seeds = [timelock.key().as_ref()],
         bump = timelock.signer_bump,
@@ -117,28 +145,54 @@ pub struct RecursiveAuth<'info> {
 }
 
 #[derive(Accounts)]
-pub struct EnqueueTransaction<'info> {
-    #[account(mut, has_one = authority)]
-    pub timelock: Account<'info, Timelock>,
-    pub authority: Signer<'info>,
-    #[account(zero)]
-    pub transaction: Account<'info, Transaction>,
+pub struct ExecuteTransaction<'info> {
+    #[account(has_one = authority)]
+    timelock: Box<Account<'info, Timelock>>,
+    /// CHECK: timelock_signer is a PDA program signer. Data is never read or written to
+    #[account(
+        seeds = [timelock.key().as_ref()],
+        bump = timelock.signer_bump,
+    )]
+    timelock_signer: UncheckedAccount<'info>,
+    #[account(mut, has_one = timelock)]
+    transaction: Box<Account<'info, Transaction>>,
+    authority: Signer<'info>,
 }
 
-#[derive(Accounts)]
-pub struct DequeueTransaction<'info> {
-    #[account(mut, has_one = authority)]
-    pub timelock: Account<'info, Timelock>,
-    pub authority: Signer<'info>,
-    #[account(mut, close = lamport_receiver)]
-    pub transaction: Account<'info, Transaction>,
-    /// CHECK: https://www.eff.org/cyberspace-independence
-    #[account(mut)]
-    pub lamport_receiver: UncheckedAccount<'info>,
+impl From<&Transaction> for Instruction {
+    fn from(tx: &Transaction) -> Instruction {
+        Instruction {
+            program_id: tx.program_id,
+            accounts: tx.accounts.iter().map(Into::into).collect(),
+            data: tx.data.clone(),
+        }
+    }
+}
+
+
+impl From<&TransactionAccount> for AccountMeta {
+    fn from(account: &TransactionAccount) -> AccountMeta {
+        match account.is_writable {
+            false => AccountMeta::new_readonly(account.pubkey, account.is_signer),
+            true => AccountMeta::new(account.pubkey, account.is_signer),
+        }
+    }
+}
+
+impl From<&AccountMeta> for TransactionAccount {
+    fn from(account_meta: &AccountMeta) -> TransactionAccount {
+        TransactionAccount {
+            pubkey: account_meta.pubkey,
+            is_signer: account_meta.is_signer,
+            is_writable: account_meta.is_writable,
+        }
+    }
 }
 
 #[error_code]
 pub enum TimelockError {
-    #[msg("Tried to dequeue a transaction from the wrong index / timelock")]
-    WrongTransactionAccount,
+    #[msg("The given transaction has already been executed")]
+    AlreadyExecuted,
+    #[msg("This transaction is not yet ready to be executed")]
+    NotReady,
 }

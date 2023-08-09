@@ -1,44 +1,45 @@
 import * as anchor from "@coral-xyz/anchor";
-import { Program } from "@coral-xyz/anchor";
-import { SolanaTimelock } from "../target/types/solana_timelock";
+const assert = require("assert");
 
 describe("solana_timelock", () => {
-  // Configure the client to use the local cluster.
-  anchor.setProvider(anchor.AnchorProvider.env());
+  const provider = anchor.getProvider();
+  anchor.setProvider(provider);
 
-  const program = anchor.workspace.SolanaTimelock as Program<SolanaTimelock>;
+  const program = anchor.workspace.SolanaTimelock;
 
-  it("Is initialized!", async () => {
-    // Add your test here.
+  it("Tests the timelock program", async () => {
     const timelock = anchor.web3.Keypair.generate();
-    const [timelockSigner, signerBump] =
+    const [timelockSigner, nonce] =
       await anchor.web3.PublicKey.findProgramAddress(
         [timelock.publicKey.toBuffer()],
         program.programId
       );
-    // allow 128 queued transactions at a time
-    const timelockCapacity = 128;
+    const timelockSize = 200; // Big enough.
 
-    const authority = anchor.web3.Keypair.generate();
-    // 1 day delay, * 5 and / 2 is because there are 5 slots every 2 seconds
-    const delayInSlots = new anchor.BN((60 * 60 * 24 * 5) / 2);
+    const delayInSlots = new anchor.BN(1);
+    const timelockAuthority = anchor.web3.Keypair.generate();
 
-    const tx = await program.methods
-      .initTimelock(authority.publicKey, delayInSlots)
+    await program.methods
+      .createTimelock(timelockAuthority.publicKey, delayInSlots, nonce)
       .accounts({
         timelock: timelock.publicKey,
       })
       .preInstructions([
         await program.account.timelock.createInstruction(
           timelock,
-          32 + 8 + 4 + timelockCapacity
+          timelockSize
         ),
       ])
       .signers([timelock])
       .rpc();
 
-    console.log(await program.account.timelock.fetch(timelock.publicKey));
+    let timelockAccount = await program.account.timelock.fetch(
+      timelock.publicKey
+    );
+    assert.strictEqual(timelockAccount.signerBump, nonce);
+    assert.ok(timelockAccount.delayInSlots.eq(delayInSlots));
 
+    const pid = program.programId;
     const accounts = [
       {
         pubkey: timelock.publicKey,
@@ -51,19 +52,19 @@ describe("solana_timelock", () => {
         isSigner: true,
       },
     ];
-    const data = program.coder.instruction.encode("update_delay_in_slots", {
-      new_delay_in_slots: delayInSlots.muln(2),
+    const newDelayInSlots = new anchor.BN(4);
+    const data = program.coder.instruction.encode("set_delay_in_slots", {
+      delayInSlots: newDelayInSlots,
     });
 
     const transaction = anchor.web3.Keypair.generate();
     const txSize = 1000;
-
     await program.methods
-      .enqueueTransaction(program.programId, accounts, data)
+      .enqueueTransaction(pid, accounts, data)
       .accounts({
         timelock: timelock.publicKey,
-        authority: authority.publicKey,
         transaction: transaction.publicKey,
+        authority: timelockAuthority.publicKey,
       })
       .preInstructions([
         await program.account.transaction.createInstruction(
@@ -71,23 +72,95 @@ describe("solana_timelock", () => {
           txSize
         ),
       ])
-      .signers([authority, transaction])
+      .signers([transaction, timelockAuthority])
       .rpc();
 
-    console.log(await program.account.transaction.fetch(transaction.publicKey));
-    console.log(await program.account.timelock.fetch(timelock.publicKey));
+    const txAccount = await program.account.transaction.fetch(
+      transaction.publicKey
+    );
+
+    assert.ok(txAccount.programId.equals(pid));
+    assert.deepStrictEqual(txAccount.accounts, accounts);
+    assert.deepStrictEqual(txAccount.data, data);
+    assert.ok(txAccount.timelock.equals(timelock.publicKey));
+    assert.deepStrictEqual(txAccount.didExecute, false);
 
     await program.methods
-      .dequeueTransaction(new anchor.BN(0))
+      .executeTransaction()
       .accounts({
         timelock: timelock.publicKey,
-        authority: authority.publicKey,
+        timelockSigner,
         transaction: transaction.publicKey,
-        lamportReceiver: authority.publicKey,
+        authority: timelockAuthority.publicKey,
       })
-      .signers([authority])
+      .remainingAccounts(
+        program.instruction.setDelayInSlots
+          .accounts({
+            timelock: timelock.publicKey,
+            timelockSigner,
+          })
+          // Change the signer status on the vendor signer since it's signed by the program, not the client.
+          .map((meta) =>
+            meta.pubkey.equals(timelockSigner)
+              ? { ...meta, isSigner: false }
+              : meta
+          )
+          .concat({
+            pubkey: program.programId,
+            isWritable: false,
+            isSigner: false,
+          })
+      )
+      .signers([timelockAuthority])
+      .rpc()
+      .then(
+        (m) => assert.fail("Transaction executed even without waiting"),
+        (e) => { assert.strictEqual(e.error.errorCode.code, "NotReady") }
+      );
+
+    // we do this to move one slot forward
+    const dummyTx = new anchor.web3.Transaction();
+    dummyTx.add(
+      anchor.web3.SystemProgram.transfer({
+        fromPubkey: provider.publicKey,
+        toPubkey: provider.publicKey,
+        lamports: 10,
+      })
+    );
+    await provider.sendAndConfirm(dummyTx);
+
+    await program.methods
+      .executeTransaction()
+      .accounts({
+        timelock: timelock.publicKey,
+        timelockSigner,
+        transaction: transaction.publicKey,
+        authority: timelockAuthority.publicKey,
+      })
+      .remainingAccounts(
+        program.instruction.setDelayInSlots
+          .accounts({
+            timelock: timelock.publicKey,
+            timelockSigner,
+          })
+          // Change the signer status on the vendor signer since it's signed by the program, not the client.
+          .map((meta) =>
+            meta.pubkey.equals(timelockSigner)
+              ? { ...meta, isSigner: false }
+              : meta
+          )
+          .concat({
+            pubkey: program.programId,
+            isWritable: false,
+            isSigner: false,
+          })
+      )
+      .signers([timelockAuthority])
       .rpc();
 
-    console.log(await program.account.timelock.fetch(timelock.publicKey));
+    timelockAccount = await program.account.timelock.fetch(timelock.publicKey);
+
+    assert.strictEqual(timelockAccount.signerBump, nonce);
+    assert.ok(timelockAccount.delayInSlots.eq(newDelayInSlots));
   });
 });
