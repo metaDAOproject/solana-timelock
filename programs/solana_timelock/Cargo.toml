@@ -1,8 +1,13 @@
 [package]
 name = "solana_timelock"
 version = "0.1.0"
-description = "Created with Anchor"
+description = "Delayed transaction execution on Solana"
 edition = "2021"
+authors = ["Proph3t <metaproph3t@protonmail.com"]
+license = "LGPL-3.0"
+repository = "https://github.com/metaDAOproject/solana-timelock"
+categories = ["cryptography::cryptocurrencies"]
+keywords = ["solana", "defi", "ponzu"]
 
 [lib]
 crate-type = ["cdylib", "lib"]
