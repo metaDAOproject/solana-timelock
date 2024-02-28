@@ -1,6 +1,6 @@
 [package]
 name = "solana_timelock"
-version = "0.1.0"
+version = "0.1.1"
 description = "Delayed transaction execution on Solana"
 edition = "2021"
 authors = ["Proph3t <metaproph3t@protonmail.com"]
@@ -21,4 +21,4 @@ cpi = ["no-entrypoint"]
 default = []
 
 [dependencies]
-anchor-lang = "0.28.0"
+anchor-lang = "0.29.0"
