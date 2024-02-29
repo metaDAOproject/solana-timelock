@@ -45,8 +45,8 @@ pub struct TransactionAccount {
 pub enum TransactionBatchStatus {
     Created,
     Sealed,
-    TimelockStarted,
-    Void,
+    Enqueued,
+    Cancelled,
     Executed
 }
 
@@ -133,36 +133,36 @@ pub mod solana_timelock {
     }
 
     pub fn enqueue_transaction_batch(
-        ctx: Context<StartOrVoidTimelock>
+        ctx: Context<EnqueueOrCancelTransactionBatch>
     ) -> Result<()> {
         let tx_batch = &mut ctx.accounts.transaction_batch;
         let clock = Clock::get()?;
 
         msg!("Current transaction batch status: {:?}", tx_batch.status);
-        require!(tx_batch.status == TransactionBatchStatus::Sealed, TimelockError::CannotStartTimelock);
+        require!(tx_batch.status == TransactionBatchStatus::Sealed, TimelockError::CannotEnqueueTransactionBatch);
 
-        tx_batch.status = TransactionBatchStatus::TimelockStarted;
+        tx_batch.status = TransactionBatchStatus::Enqueued;
         tx_batch.enqueued_slot = clock.slot;
 
         Ok(())
     }
 
     pub fn cancel_transaction_batch(
-        ctx: Context<StartOrVoidTimelock>
+        ctx: Context<EnqueueOrCancelTransactionBatch>
     ) -> Result<()> {
         let tx_batch = &mut ctx.accounts.transaction_batch;
 
         msg!("Current transaction batch status: {:?}", tx_batch.status);
-        require!(tx_batch.status == TransactionBatchStatus::TimelockStarted, TimelockError::CannotVoidTimelock);
+        require!(tx_batch.status == TransactionBatchStatus::Enqueued, TimelockError::CannotCancelTimelock);
 
         let clock = Clock::get()?;
         let enqueued_slot = tx_batch.enqueued_slot;
         let required_delay = ctx.accounts.timelock.delay_in_slots;
-        require!(clock.slot - enqueued_slot < required_delay, TimelockError::CanOnlyVoidDuringTimelockPeriod);
+        require!(clock.slot - enqueued_slot < required_delay, TimelockError::CanOnlyCancelDuringTimelockPeriod);
 
         // A fallback option that allows the timelock authority to prevent the
-        // transaction batch from executing by voiding it during the timelock period.
-        tx_batch.status = TransactionBatchStatus::Void;
+        // transaction batch from executing by canceling it during the timelock period.
+        tx_batch.status = TransactionBatchStatus::Cancelled;
 
         Ok(())
 
@@ -172,7 +172,7 @@ pub mod solana_timelock {
         let tx_batch = &mut ctx.accounts.transaction_batch;
 
         msg!("Current transaction batch status: {:?}", tx_batch.status);
-        require!(tx_batch.status == TransactionBatchStatus::TimelockStarted, TimelockError::CannotExecuteTransactions);
+        require!(tx_batch.status == TransactionBatchStatus::Enqueued, TimelockError::CannotExecuteTransactions);
 
         let clock = Clock::get()?;
         let enqueued_slot = tx_batch.enqueued_slot;
@@ -236,15 +236,16 @@ pub struct CreateTransactionBatch<'info> {
 #[derive(Accounts)]
 pub struct UpdateTransactionBatch<'info> {
     transaction_batch_authority: Signer<'info>,
-    #[account(has_one=transaction_batch_authority)]
+    #[account(mut, has_one=transaction_batch_authority)]
     transaction_batch: Box<Account<'info, TransactionBatch>>
 }
 
 #[derive(Accounts)]
-pub struct StartOrVoidTimelock<'info> {
+pub struct EnqueueOrCancelTransactionBatch<'info> {
     authority: Signer<'info>,
     #[account(has_one = authority)]
     timelock: Box<Account<'info, Timelock>>,
+    #[account(mut)]
     transaction_batch: Box<Account<'info, TransactionBatch>>
 }
 
@@ -292,20 +293,18 @@ impl From<&AccountMeta> for TransactionAccount {
 
 #[error_code]
 pub enum TimelockError {
-    #[msg("The given transaction has already been executed")]
-    AlreadyExecuted,
     #[msg("This transaction is not yet ready to be executed")]
     NotReady,
     #[msg("Can only add instructions when transaction batch status is `Created`")]
     CannotAddTransactions,
     #[msg("Can only seal the transaction batch when status is `Created`")]
     CannotSealTransactionBatch,
-    #[msg("Can only start the timelock running once the status is `Sealed`")]
-    CannotStartTimelock,
-    #[msg("Can only void the transactions if the status `TimelockStarted`")]
-    CannotVoidTimelock,
-    #[msg("Can only void the transactions during the timelock period")]
-    CanOnlyVoidDuringTimelockPeriod,
-    #[msg("Can only execute the transactions if the status is `TimelockStarted`")]
+    #[msg("Can only enqueue the timelock running once the status is `Sealed`")]
+    CannotEnqueueTransactionBatch,
+    #[msg("Can only cancel the transactions if the status `Enqueued`")]
+    CannotCancelTimelock,
+    #[msg("Can only cancel the transactions during the timelock period")]
+    CanOnlyCancelDuringTimelockPeriod,
+    #[msg("Can only execute the transactions if the status is `Enqueued`")]
     CannotExecuteTransactions
 }
