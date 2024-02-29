@@ -89,17 +89,17 @@ pub mod solana_timelock {
     ) -> Result<()> {
         let tx_queue = &mut ctx.accounts.transaction_queue;
 
-        tx_queue.status = TransactionQueueStatus::Created;
         tx_queue.timelock = ctx.accounts.timelock.key();
         tx_queue.transaction_queue_authority = ctx.accounts.transaction_queue_authority.key();
+        tx_queue.status = TransactionQueueStatus::Created;
 
         Ok(())
     }
 
     pub fn add_transaction(
         ctx: Context<UpdateTransactionQueue>,
-        pid: Pubkey,
-        accs: Vec<TransactionAccount>,
+        program_id: Pubkey,
+        accounts: Vec<TransactionAccount>,
         data: Vec<u8>
     ) -> Result<()> {
         let tx_queue = &mut ctx.accounts.transaction_queue;
@@ -108,8 +108,8 @@ pub mod solana_timelock {
         require!(tx_queue.status == TransactionQueueStatus::Created, TimelockError::CannotAddTransactions);
 
         let this_transaction = Transaction {
-            program_id: pid,
-            accounts: accs,
+            program_id,
+            accounts,
             data,
             did_execute: false
         };
@@ -155,7 +155,13 @@ pub mod solana_timelock {
         msg!("Current transaction queue status: {:?}", tx_queue.status);
         require!(tx_queue.status == TransactionQueueStatus::TimelockStarted, TimelockError::CannotVoidTimelock);
 
-        // A fallback option that allows the timelock authority to prevent the transaction queue from ever executing
+        let clock = Clock::get()?;
+        let enqueued_slot = tx_queue.enqueued_slot;
+        let required_delay = ctx.accounts.timelock.delay_in_slots;
+        require!(clock.slot - enqueued_slot < required_delay, TimelockError::CanOnlyVoidDuringTimelockPeriod);
+
+        // A fallback option that allows the timelock authority to prevent the
+        // transaction queue from executing by voiding it during the timelock period.
         tx_queue.status = TransactionQueueStatus::Void;
 
         Ok(())
@@ -171,9 +177,7 @@ pub mod solana_timelock {
         let clock = Clock::get()?;
         let enqueued_slot = tx_queue.enqueued_slot;
         let required_delay = ctx.accounts.timelock.delay_in_slots;
-        if clock.slot - enqueued_slot < required_delay {
-            return Err(TimelockError::NotReady.into());
-        }
+        require!(clock.slot - enqueued_slot > required_delay, TimelockError::NotReady);
 
         if let Some(transaction) = tx_queue.transactions.iter_mut().find(|tx| !tx.did_execute) {
             let mut ix: Instruction = transaction.deref().into();
@@ -189,7 +193,9 @@ pub mod solana_timelock {
             solana_program::program::invoke_signed(&ix, accounts, signer)?;
     
             transaction.did_execute = true;
-        } else {
+        }
+
+        if tx_queue.transactions.iter().all(|tx| tx.did_execute) {
             tx_queue.status = TransactionQueueStatus::Executed;
         }
 
@@ -298,6 +304,8 @@ pub enum TimelockError {
     CannotStartTimelock,
     #[msg("Can only void the transactions if the status `TimelockStarted`")]
     CannotVoidTimelock,
+    #[msg("Can only void the transactions during the timelock period")]
+    CanOnlyVoidDuringTimelockPeriod,
     #[msg("Can only execute the transactions if the status is `TimelockStarted`")]
     CannotExecuteTransactions
 }
