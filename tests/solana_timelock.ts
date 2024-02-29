@@ -118,24 +118,7 @@ describe("solana_timelock", () => {
       .rpc();
 
     // Next set the timelock delay
-    // const pid = program.programId;
-    // const accounts = [
-    //   {
-    //     pubkey: timelockSignerPubkey,
-    //     isWritable: false,
-    //     isSigner: true,
-    //   },
-    //   {
-    //     pubkey: timelock.publicKey,
-    //     isWritable: true,
-    //     isSigner: false,
-    //   },
-    // ];
     const newDelayInSlots = new anchor.BN(2);
-    // const data = program.coder.instruction.encode("set_delay_in_slots", {
-    //   delayInSlots: newDelayInSlots,
-    // });
-
     let setDelayInSlotsInstruction = program.instruction.setDelayInSlots(
       newDelayInSlots,
       {
