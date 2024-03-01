@@ -18,13 +18,20 @@ pub struct Timelock {
 }
 
 #[account]
-pub struct Transaction {
+pub struct TransactionBatch {
+    pub status: TransactionBatchStatus,
+    pub transactions: Vec<Transaction>,
     pub timelock: Pubkey,
+    pub enqueued_slot: u64,
+    pub transaction_batch_authority: Pubkey
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone)]
+pub struct Transaction {
     pub program_id: Pubkey,
     pub accounts: Vec<TransactionAccount>,
     pub data: Vec<u8>,
     pub did_execute: bool,
-    pub enqueued_slot: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone)]
@@ -32,6 +39,15 @@ pub struct TransactionAccount {
     pub pubkey: Pubkey,
     pub is_signer: bool,
     pub is_writable: bool,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Debug)]
+pub enum TransactionBatchStatus {
+    Created,
+    Sealed,
+    Enqueued,
+    Cancelled,
+    Executed
 }
 
 #[program]
@@ -42,32 +58,12 @@ pub mod solana_timelock {
         ctx: Context<CreateTimelock>,
         authority: Pubkey,
         delay_in_slots: u64,
-        signer_bump: u8,
     ) -> Result<()> {
         let timelock = &mut ctx.accounts.timelock;
 
         timelock.authority = authority;
         timelock.delay_in_slots = delay_in_slots;
-        timelock.signer_bump = signer_bump;
-
-        Ok(())
-    }
-
-    pub fn enqueue_transaction(
-        ctx: Context<EnqueueTransaction>,
-        pid: Pubkey,
-        accs: Vec<TransactionAccount>,
-        data: Vec<u8>,
-    ) -> Result<()> {
-        let tx = &mut ctx.accounts.transaction;
-        let clock = Clock::get()?;
-
-        tx.enqueued_slot = clock.slot;
-        tx.program_id = pid;
-        tx.accounts = accs;
-        tx.data = data;
-        tx.timelock = ctx.accounts.timelock.key();
-        tx.did_execute = false;
+        timelock.signer_bump = ctx.bumps.timelock_signer;
 
         Ok(())
     }
@@ -88,31 +84,120 @@ pub mod solana_timelock {
         Ok(())
     }
 
-    pub fn execute_transaction(ctx: Context<ExecuteTransaction>) -> Result<()> {
-        if ctx.accounts.transaction.did_execute {
-            return Err(TimelockError::AlreadyExecuted.into());
-        }
+    pub fn create_transaction_batch(
+        ctx: Context<CreateTransactionBatch>,
+    ) -> Result<()> {
+        let tx_batch = &mut ctx.accounts.transaction_batch;
+
+        tx_batch.timelock = ctx.accounts.timelock.key();
+        tx_batch.transaction_batch_authority = ctx.accounts.transaction_batch_authority.key();
+        tx_batch.status = TransactionBatchStatus::Created;
+
+        Ok(())
+    }
+
+    pub fn add_transaction(
+        ctx: Context<UpdateTransactionBatch>,
+        program_id: Pubkey,
+        accounts: Vec<TransactionAccount>,
+        data: Vec<u8>
+    ) -> Result<()> {
+        let tx_batch = &mut ctx.accounts.transaction_batch;
+
+        msg!("Current transaction batch status: {:?}", tx_batch.status);
+        require!(tx_batch.status == TransactionBatchStatus::Created, TimelockError::CannotAddTransactions);
+
+        let this_transaction = Transaction {
+            program_id,
+            accounts,
+            data,
+            did_execute: false
+        };
+
+        tx_batch.transactions.push(this_transaction);
+
+        Ok(())
+    }
+
+    pub fn seal_transaction_batch(
+        ctx: Context<UpdateTransactionBatch>
+    ) -> Result<()> {
+        let tx_batch = &mut ctx.accounts.transaction_batch;
+
+        msg!("Current transaction batch status: {:?}", tx_batch.status);
+        require!(tx_batch.status == TransactionBatchStatus::Created, TimelockError::CannotSealTransactionBatch);
+
+        tx_batch.status = TransactionBatchStatus::Sealed;
+
+        Ok(())
+    }
+
+    pub fn enqueue_transaction_batch(
+        ctx: Context<EnqueueOrCancelTransactionBatch>
+    ) -> Result<()> {
+        let tx_batch = &mut ctx.accounts.transaction_batch;
+        let clock = Clock::get()?;
+
+        msg!("Current transaction batch status: {:?}", tx_batch.status);
+        require!(tx_batch.status == TransactionBatchStatus::Sealed, TimelockError::CannotEnqueueTransactionBatch);
+
+        tx_batch.status = TransactionBatchStatus::Enqueued;
+        tx_batch.enqueued_slot = clock.slot;
+
+        Ok(())
+    }
+
+    pub fn cancel_transaction_batch(
+        ctx: Context<EnqueueOrCancelTransactionBatch>
+    ) -> Result<()> {
+        let tx_batch = &mut ctx.accounts.transaction_batch;
+
+        msg!("Current transaction batch status: {:?}", tx_batch.status);
+        require!(tx_batch.status == TransactionBatchStatus::Enqueued, TimelockError::CannotCancelTimelock);
 
         let clock = Clock::get()?;
-        let enqueued_slot = ctx.accounts.transaction.enqueued_slot;
+        let enqueued_slot = tx_batch.enqueued_slot;
         let required_delay = ctx.accounts.timelock.delay_in_slots;
-        if clock.slot - enqueued_slot < required_delay {
-            return Err(TimelockError::NotReady.into());
-        }
+        require!(clock.slot - enqueued_slot < required_delay, TimelockError::CanOnlyCancelDuringTimelockPeriod);
 
-        let mut ix: Instruction = (*ctx.accounts.transaction).deref().into();
-        for acc in ix.accounts.iter_mut() {
-            if &acc.pubkey == ctx.accounts.timelock_signer.key {
-                acc.is_signer = true;
+        // A fallback option that allows the timelock authority to prevent the
+        // transaction batch from executing by canceling it during the timelock period.
+        tx_batch.status = TransactionBatchStatus::Cancelled;
+
+        Ok(())
+
+    }
+
+    pub fn execute_transaction_batch(ctx: Context<ExecuteTransactionBatch>) -> Result<()> {
+        let tx_batch = &mut ctx.accounts.transaction_batch;
+
+        msg!("Current transaction batch status: {:?}", tx_batch.status);
+        require!(tx_batch.status == TransactionBatchStatus::Enqueued, TimelockError::CannotExecuteTransactions);
+
+        let clock = Clock::get()?;
+        let enqueued_slot = tx_batch.enqueued_slot;
+        let required_delay = ctx.accounts.timelock.delay_in_slots;
+        require!(clock.slot - enqueued_slot > required_delay, TimelockError::NotReady);
+
+        if let Some(transaction) = tx_batch.transactions.iter_mut().find(|tx| !tx.did_execute) {
+            let mut ix: Instruction = transaction.deref().into();
+            for acc in ix.accounts.iter_mut() {
+                if &acc.pubkey == ctx.accounts.timelock_signer.key {
+                    acc.is_signer = true;
+                }
             }
+            let timelock_key = ctx.accounts.timelock.key();
+            let seeds = &[timelock_key.as_ref(), &[ctx.accounts.timelock.signer_bump]];
+            let signer = &[&seeds[..]];
+            let accounts = ctx.remaining_accounts;
+            solana_program::program::invoke_signed(&ix, accounts, signer)?;
+    
+            transaction.did_execute = true;
         }
-        let timelock_key = ctx.accounts.timelock.key();
-        let seeds = &[timelock_key.as_ref(), &[ctx.accounts.timelock.signer_bump]];
-        let signer = &[&seeds[..]];
-        let accounts = ctx.remaining_accounts;
-        solana_program::program::invoke_signed(&ix, accounts, signer)?;
 
-        ctx.accounts.transaction.did_execute = true;
+        if tx_batch.transactions.iter().all(|tx| tx.did_execute) {
+            tx_batch.status = TransactionBatchStatus::Executed;
+        }
 
         Ok(())
     }
@@ -120,43 +205,60 @@ pub mod solana_timelock {
 
 #[derive(Accounts)]
 pub struct CreateTimelock<'info> {
+    #[account(
+        seeds = [timelock.key().as_ref()],
+        bump,
+    )]
+    timelock_signer: SystemAccount<'info>, 
     #[account(zero, signer)]
     timelock: Box<Account<'info, Timelock>>,
-}
-
-#[derive(Accounts)]
-pub struct EnqueueTransaction<'info> {
-    #[account(has_one = authority)]
-    timelock: Box<Account<'info, Timelock>>,
-    #[account(zero, signer)]
-    transaction: Box<Account<'info, Transaction>>,
-    authority: Signer<'info>,
 }
 
 #[derive(Accounts)]
 pub struct Auth<'info> {
-    #[account(mut)]
-    timelock: Box<Account<'info, Timelock>>,
     #[account(
         seeds = [timelock.key().as_ref()],
         bump = timelock.signer_bump,
     )]
     timelock_signer: Signer<'info>,
+    #[account(mut)]
+    timelock: Box<Account<'info, Timelock>>,
 }
 
 #[derive(Accounts)]
-pub struct ExecuteTransaction<'info> {
+pub struct CreateTransactionBatch<'info> {
+    transaction_batch_authority: Signer<'info>,
+    timelock: Box<Account<'info, Timelock>>,
+    #[account(zero, signer)]
+    transaction_batch: Box<Account<'info, TransactionBatch>>
+}
+
+#[derive(Accounts)]
+pub struct UpdateTransactionBatch<'info> {
+    transaction_batch_authority: Signer<'info>,
+    #[account(mut, has_one=transaction_batch_authority)]
+    transaction_batch: Box<Account<'info, TransactionBatch>>
+}
+
+#[derive(Accounts)]
+pub struct EnqueueOrCancelTransactionBatch<'info> {
+    authority: Signer<'info>,
     #[account(has_one = authority)]
     timelock: Box<Account<'info, Timelock>>,
-    /// CHECK: timelock_signer is a PDA program signer. Data is never read or written to
+    #[account(mut)]
+    transaction_batch: Box<Account<'info, TransactionBatch>>
+}
+
+#[derive(Accounts)]
+pub struct ExecuteTransactionBatch<'info> {
     #[account(
         seeds = [timelock.key().as_ref()],
         bump = timelock.signer_bump,
     )]
-    timelock_signer: UncheckedAccount<'info>,
+    timelock_signer: SystemAccount<'info>,
+    timelock: Box<Account<'info, Timelock>>,
     #[account(mut, has_one = timelock)]
-    transaction: Box<Account<'info, Transaction>>,
-    authority: Signer<'info>,
+    transaction_batch: Box<Account<'info, TransactionBatch>>
 }
 
 impl From<&Transaction> for Instruction {
@@ -191,8 +293,18 @@ impl From<&AccountMeta> for TransactionAccount {
 
 #[error_code]
 pub enum TimelockError {
-    #[msg("The given transaction has already been executed")]
-    AlreadyExecuted,
     #[msg("This transaction is not yet ready to be executed")]
     NotReady,
+    #[msg("Can only add instructions when transaction batch status is `Created`")]
+    CannotAddTransactions,
+    #[msg("Can only seal the transaction batch when status is `Created`")]
+    CannotSealTransactionBatch,
+    #[msg("Can only enqueue the timelock running once the status is `Sealed`")]
+    CannotEnqueueTransactionBatch,
+    #[msg("Can only cancel the transactions if the status `Enqueued`")]
+    CannotCancelTimelock,
+    #[msg("Can only cancel the transactions during the timelock period")]
+    CanOnlyCancelDuringTimelockPeriod,
+    #[msg("Can only execute the transactions if the status is `Enqueued`")]
+    CannotExecuteTransactions
 }
