@@ -245,7 +245,7 @@ pub struct EnqueueOrCancelTransactionBatch<'info> {
     authority: Signer<'info>,
     #[account(has_one = authority)]
     timelock: Box<Account<'info, Timelock>>,
-    #[account(mut)]
+    #[account(mut, has_one = timelock)]
     transaction_batch: Box<Account<'info, TransactionBatch>>
 }
 
