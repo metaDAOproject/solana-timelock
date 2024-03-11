@@ -3,11 +3,12 @@
 ![License LGPLv3](https://img.shields.io/badge/License-LGPLv3-violet.svg)
 
 A simple program for delayed transaction execution on Solana. Unaudited; use
-at your own risk. 
+at your own risk.
 
 ## Why use a timelock?
 
 Basically, a timelock can provide extra security and/or decentralization. Benefits include:
+
 - if a deployer key is compromised, users can move their funds out of the protocol before the attacker can upgrade the program
 - users can verify that new changes to the program or to protocol parameters (e.g., fees) are acceptable
 - projects can claim some level of decentralization even when a central team (i.e., x Labs) has the ability to update the program and/or protocol parameters
@@ -21,8 +22,7 @@ Example usage is demonstrated in [tests/solana_timelock.ts](./tests/solana_timel
 
 ## Deployment address
 
-The program is currently live on devnet at
-[TiMEYuk7rCBAFYMvhN3hae9PRc1NUYL71Zu3MCaCBVe](https://explorer.solana.com/address/TiMEYuk7rCBAFYMvhN3hae9PRc1NUYL71Zu3MCaCBVe?cluster=devnet).
+The program is currently live on
+[devnet](https://solscan.io/account/tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF?cluster=custom&customUrl=https%3A%2F%2Fapi.devnet.solana.com) and [mainnet](https://solscan.io/account/tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF) at `tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF`.
 You may verify that the deployed program matches the source by using the
-`anchor verify` command.
-
+`solana-verify verify-from-repo -um --program-id tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF https://github.com/metaDAOproject/solana-timelock` command.

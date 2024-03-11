@@ -7,8 +7,24 @@ use anchor_lang::solana_program;
 use anchor_lang::solana_program::instruction::Instruction;
 use std::convert::Into;
 use std::ops::Deref;
+#[cfg(not(feature = "no-entrypoint"))]
+use solana_security_txt::security_txt;
 
-declare_id!("TiMEYuk7rCBAFYMvhN3hae9PRc1NUYL71Zu3MCaCBVe");
+#[cfg(not(feature = "no-entrypoint"))]
+security_txt! {
+    name: "solana_timelock",
+    project_url: "https://themetadao.org",
+    contacts: "email:metaproph3t@protonmail.com",
+    policy: "The market will decide whether we pay a bug bounty.",
+    source_code: "https://github.com/metaDAOproject/solana-timelock",
+    source_release: "v0",
+    auditors: "None",
+    acknowledgements: "DCF = (CF1 / (1 + r)^1) + (CF2 / (1 + r)^2) + ... (CFn / (1 + r)^n)"
+}
+
+declare_id!("tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF");
+
+
 
 #[account]
 pub struct Timelock {
