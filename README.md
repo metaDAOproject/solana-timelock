@@ -22,7 +22,7 @@ Example usage is demonstrated in [tests/solana_timelock.ts](./tests/solana_timel
 
 ## Deployment address
 
-The program is currently live on devnet at
-[tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF](https://explorer.solana.com/address/tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF?cluster=devnet).
+The program is currently live on
+[devnet](https://solscan.io/account/tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF?cluster=custom&customUrl=https%3A%2F%2Fapi.devnet.solana.com) and [mainnet](https://solscan.io/account/tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF) at `tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF`.
 You may verify that the deployed program matches the source by using the
-`anchor verify` command.
+`solana-verify verify-from-repo -um --program-id tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF https://github.com/metaDAOproject/solana-timelock` command.
