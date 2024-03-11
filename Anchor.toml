@@ -2,14 +2,14 @@
 seeds = false
 skip-lint = false
 [programs.localnet]
-solana_timelock = "TiMEYuk7rCBAFYMvhN3hae9PRc1NUYL71Zu3MCaCBVe"
+solana_timelock = "tiME1hz9F5C5ZecbvE5z6Msjy8PKfTqo1UuRYXfndKF"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
 cluster = "Localnet"
-wallet = "~/.config/solana/id.json"
+wallet = "/root/.config/solana/auction.json"
 
 [scripts]
 test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/solana_timelock.ts"
